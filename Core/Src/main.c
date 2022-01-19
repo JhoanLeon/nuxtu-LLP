@@ -47,6 +47,72 @@ I2C_HandleTypeDef hi2c1;
 
 /* USER CODE BEGIN PV */
 
+// Define to activate debug mode with GPIO signal on code
+#define DEBUG 1
+
+////// STATIC COMMANDS TO REQUEST DATA //////
+
+#define REQUEST_DETECTION 0
+#define REQUEST_DEVICE_TYPE 1
+#define REQUEST_DEVICE_METADATA_BASIC 2
+#define REQUEST_DEVICE_METADATA_COMPLETE 3
+#define REQUEST_DEVICE_METADATA_VOLTAGE_DATA 4
+
+////// STATIC INFORMATION ABOUT DEVICE //////
+
+// REQUEST_DETECTION
+uint8_t DETECTION_VALUE = 0xFF;
+
+// REQUEST_DEVICE_TYPE
+uint8_t DEVICE_TYPE = 0x00;
+
+// REQUEST_DEVICE_METADATA_BASIC
+uint8_t BASIC_DATA[14] = {0x35, 0x45, 5, '2','0','/','0','1','/','2','0','2','2', 0x0F}; // BASIC_DATA[14] = {PCB_ID[15:8], PCB_ID[7:0], NUMBER_OF_SENSORS, MANUFACTURE_DATE, PCB_CAPABILITES};
+
+// Defines for real environmental sensors
+#define TEMP
+#define PCB_TEMP
+#define HUMD
+#define PRES
+
+// REQUEST_DEVICE_METADATA_COMPLETE
+#define gas_sensors 2 // at least one gas sensor in the array
+
+typedef struct gas_sensor
+{
+	char name[11];
+	char type[14];
+	char main_gas[20];
+	int16_t response_time;
+	float voltage;
+} gas_sensor;
+
+gas_sensor N[gas_sensors] = {{"TESTNAMEN0", "TESTSENSORTYPE", "TESTMAINGASOFSENSORN", 360, 0.0},
+							{"TESTNAMEN1", "TESTSENSORTYPE", "TESTMAINGASOFSENSORN", 361, 0.0}};
+
+// REQUEST_DEVICE_METADATA_VOLTAGE_DATA
+#define env_sensors 4 // environment sensors
+uint8_t total_adc_sensors; // total ADC channels for analog sensors
+
+float VSENSE = 3.3/4095; // constant to conversions of ADC value to V
+float V25 = 0.76; // Voltage of internal temperature sensor at 25°C
+float Avg_slope = 0.0025; // mV/degC
+
+float pcb_temperature = 0.0; // initialized to return °C of PCB temperature
+float temperature = 0.0; // initialized to return °C of environment temperature
+float humidity = 0.0; // initialized to return %RH of environment humidity
+float pressure = 0.0; // initialized to return kPa of absolute pressure
+
+float *env_variables[env_sensors] = {&temperature, &pcb_temperature, &humidity, &pressure}; // array to send environmental variables
+// value of data on env_variable -> *env_variables[i]
+
+// OTHER VARIABLES
+uint8_t last_command_received = 0;
+
+uint8_t data;
+uint16_t data_response_time;
+float data_env;
+
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -97,13 +163,51 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
+  //HAL_I2C_EnableListen_IT(&hi2c1); // to activate the slave mode of I2C
+
+  total_adc_sensors = env_sensors + gas_sensors; // calculate the total ADC channels to be used
+
+  uint32_t adc_values[total_adc_sensors]; // to store all read ADC values, in channel name order
+
+  HAL_ADC_Start_DMA(&hadc1, adc_values, sizeof(adc_values)); // start the ADC in DMA mode
+
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    /* USER CODE END WHILE */
+	  ////// COMPUTATION OF ENVIRONMENTAL VALUES //////
+	  #ifdef TEMP
+	  temperature = -66.875 + 218.75*(adc_values[0]/4095); // formula taken from datasheet of SHT31-ARP-B pag.8 (°C -45 -> +125)
+	  #endif
+
+	  #ifdef HUMD
+	  humidity = -12.5 + 125*(adc_values[1]/4095); // formula taken from datasheet of SHT31-ARP-B pag.8 (%RH 0 -> 100)
+	  #endif
+
+	  #ifdef PRES
+	  pressure = ((adc_values[2]/4095) - 0.05069)/0.00293; // formula derived from datasheet of KP229E2701 pag.12
+	  #endif
+
+	  #ifdef PCB_TEMP
+	  pcb_temperature = ((adc_values[total_adc_sensors-1]*VSENSE - V25)/ Avg_slope) + 25; // formula taken from reference manual of STM32F303VCT6 pag.373
+	  #endif
+
+	  ////// COMPUTATION OF GAS SENSORS VOLTAGES //////
+
+	  for (int i = 0; i < gas_sensors; i++)
+	  {
+		  N[i].voltage = adc_values[i+3]*VSENSE*1000; // mV from n_i gas sensor
+	  }
+
+	  #ifdef DEBUG
+	  HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13); // blink led to know that main program is running
+	  #endif
+
+	  HAL_Delay(50); // dummy delay, can be changed to a strategy to compute ADC values with callback
+
+	  /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
