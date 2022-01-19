@@ -42,7 +42,6 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
-
 I2C_HandleTypeDef hi2c1;
 
 /* USER CODE BEGIN PV */
@@ -92,11 +91,10 @@ gas_sensor N[gas_sensors] = {{"TESTNAMEN0", "TESTSENSORTYPE", "TESTMAINGASOFSENS
 
 // REQUEST_DEVICE_METADATA_VOLTAGE_DATA
 #define env_sensors 4 // environment sensors
-uint8_t total_adc_sensors; // total ADC channels for analog sensors
 
 float VSENSE = 3.3/4095; // constant to conversions of ADC value to V
-float V25 = 0.76; // Voltage of internal temperature sensor at 25°C
-float Avg_slope = 0.0025; // mV/degC
+float V25 = 1.43; // Voltage of internal temperature sensor at 25°C
+float Avg_slope = 0.0043; // V/degC
 
 float pcb_temperature = 0.0; // initialized to return °C of PCB temperature
 float temperature = 0.0; // initialized to return °C of environment temperature
@@ -127,6 +125,118 @@ static void MX_I2C1_Init(void);
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
+
+// function to check address matching
+void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode)
+{
+	#ifdef DEBUG
+	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
+	#endif
+
+	if ( TransferDirection == I2C_DIRECTION_TRANSMIT ) // Master sends a write instruction
+	{
+		// read byte sent by master (this is the request information command)
+		HAL_I2C_Slave_Seq_Receive_IT(hi2c, &last_command_received, sizeof(last_command_received), I2C_NEXT_FRAME);
+	}
+
+	else // Master sends a read instruction
+	{
+		switch(last_command_received)
+		{
+			case REQUEST_DETECTION:
+			{
+				// the master did not request a value, it is just for detection (offset = 0)
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &DETECTION_VALUE, sizeof(DETECTION_VALUE), I2C_NEXT_FRAME);
+				break;
+			}
+
+			case REQUEST_DEVICE_TYPE:
+			{
+				// SEND DATA
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &DEVICE_TYPE, sizeof(DEVICE_TYPE), I2C_NEXT_FRAME);
+				break;
+			}
+
+			case REQUEST_DEVICE_METADATA_BASIC:
+			{
+				// SEND DATA
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, BASIC_DATA, sizeof(BASIC_DATA), I2C_NEXT_FRAME);
+				break;
+			}
+
+			case REQUEST_DEVICE_METADATA_COMPLETE:
+			{
+				// SEND DATA
+				for (int i = 0; i < gas_sensors; i++)
+				{
+					// send data of each gas sensor
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)N[i].name, sizeof(N[i].name), I2C_NEXT_FRAME);
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)N[i].type, sizeof(N[i].type), I2C_NEXT_FRAME);
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)N[i].main_gas, sizeof(N[i].main_gas), I2C_NEXT_FRAME);
+					data_response_time = N[i].response_time;
+					data = (data_response_time>>8)&(0xFF);
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &data, sizeof(data), I2C_NEXT_FRAME);
+					data = data_response_time & 0xFF;
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &data, sizeof(data), I2C_NEXT_FRAME);
+				}
+				break;
+			}
+
+			case REQUEST_DEVICE_METADATA_VOLTAGE_DATA:
+			{
+				// SEND ENVIRONMENTAL VARIABLES DATA
+				for (int i = 0; i < env_sensors; i++)
+				{
+					data_env = *env_variables[i];
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&data_env, sizeof(data_env), I2C_NEXT_FRAME); // try float values as a buffer to send through I2C
+				}
+
+				// SEND GAS SENSORS VOLTAGES
+				for (int i = 0; i < gas_sensors; i++)
+				{
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&N[i].voltage, sizeof(N[i].voltage), I2C_NEXT_FRAME); // try float values as a buffer to send through I2C
+				}
+				break;
+			}
+
+			default:
+			{
+				break;
+			}
+		}
+	}
+}
+
+// function to put the slave ready again when listen mode finish
+void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+	HAL_I2C_EnableListen_IT(hi2c); // slave is ready again
+}
+
+#ifdef DEBUG
+// function to detect complete reception of information
+void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_14); // just for quick debug
+}
+
+// function to detect complete transmission of information
+void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
+{
+	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_14); // just for quick debug
+}
+
+// function to manage i2c errors
+void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
+{
+	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15); // just for quick debug
+
+	if (HAL_I2C_GetError(hi2c) == HAL_I2C_ERROR_OVR ) // Error obtained in debug, due to no clock stretching
+	{
+		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+	}
+}
+#endif
 
 /* USER CODE END 0 */
 
@@ -163,11 +273,17 @@ int main(void)
   MX_I2C1_Init();
   /* USER CODE BEGIN 2 */
 
-  //HAL_I2C_EnableListen_IT(&hi2c1); // to activate the slave mode of I2C
+  HAL_I2C_EnableListen_IT(&hi2c1); // to activate the slave mode of I2C
 
-  total_adc_sensors = env_sensors + gas_sensors; // calculate the total ADC channels to be used
+  #ifdef DEBUG
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, RESET);
+  #endif
 
-  uint32_t adc_values[total_adc_sensors]; // to store all read ADC values, in channel name order
+  uint8_t total_adc_sensors = env_sensors + gas_sensors; // total ADC channels to be used for analog sensors
+
+  uint32_t adc_values[total_adc_sensors]; // to store all read ADC values, in channel name order (channel1 -> adc[0], ..., temp -> adc[total-1])
 
   HAL_ADC_Start_DMA(&hadc1, adc_values, sizeof(adc_values)); // start the ADC in DMA mode
 
@@ -207,7 +323,7 @@ int main(void)
 
 	  HAL_Delay(50); // dummy delay, can be changed to a strategy to compute ADC values with callback
 
-	  /* USER CODE END WHILE */
+    /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
   }
@@ -441,10 +557,10 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : PC13 */
-  GPIO_InitStruct.Pin = GPIO_PIN_13;
+  /*Configure GPIO pins : PC13 PC14 PC15 */
+  GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
