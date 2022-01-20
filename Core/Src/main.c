@@ -42,12 +42,13 @@
 /* Private variables ---------------------------------------------------------*/
 ADC_HandleTypeDef hadc1;
 DMA_HandleTypeDef hdma_adc1;
+
 I2C_HandleTypeDef hi2c1;
 
 /* USER CODE BEGIN PV */
 
 // Define to activate debug mode with GPIO signal on code
-#define DEBUG 1
+//#define DEBUG_MODE
 
 ////// STATIC COMMANDS TO REQUEST DATA //////
 
@@ -60,41 +61,46 @@ I2C_HandleTypeDef hi2c1;
 ////// STATIC INFORMATION ABOUT DEVICE //////
 
 // REQUEST_DETECTION
-uint8_t DETECTION_VALUE = 0xFF;
+uint8_t DETECTION_VALUE = 0x00;
 
 // REQUEST_DEVICE_TYPE
 uint8_t DEVICE_TYPE = 0x00;
 
 // REQUEST_DEVICE_METADATA_BASIC
-uint8_t BASIC_DATA[14] = {0x35, 0x45, 5, '2','0','/','0','1','/','2','0','2','2', 0x0F}; // BASIC_DATA[14] = {PCB_ID[15:8], PCB_ID[7:0], NUMBER_OF_SENSORS, MANUFACTURE_DATE, PCB_CAPABILITES};
+uint8_t BASIC_DATA[14] = {0x00, 0x0A, 3, '2','0','/','0','1','/','2','0','2','2', 0x05}; // BASIC_DATA[14] = {PCB_ID[15:8], PCB_ID[7:0], NUMBER_OF_SENSORS, MANUFACTURE_DATE, PCB_CAPABILITES};
 
 // Defines for actual environmental sensors in the system
-#define TEMP
+//#define TEMP
 #define PCB_TEMP
-#define HUMD
+//#define HUMD
 #define PRES
 
 // REQUEST_DEVICE_METADATA_COMPLETE
-#define gas_sensors 2 // at least one gas sensor in the array
+#define gas_sensors 3 // at least one gas sensor in the array
+
+float n1_voltage = 0.0; // mV for n1 gas sensor
+float n2_voltage = 0.0; // mV for n2 gas sensor
+float n3_voltage = 0.0; // mV for n3 gas sensor
 
 typedef struct gas_sensor
 {
 	unsigned char name[11];
 	unsigned char type[14];
 	unsigned char main_gas[20];
-	int16_t response_time;
-	float voltage;
+	uint16_t response_time;
 } gas_sensor;
 
-gas_sensor N[gas_sensors] = {{"TESTNAMEN0", "TESTSENSORTYPE", "TESTMAINGASOFSENSORN", 360, 0.0},
-							{"TESTNAMEN1", "TESTSENSORTYPE", "TESTMAINGASOFSENSORN", 361, 0.0}};
+uint8_t COMPLETE_DATA[47*gas_sensors];
+uint8_t COMPLETE_DATA1[47];
+uint8_t COMPLETE_DATA2[47];
+uint8_t COMPLETE_DATA3[47];
 
 // REQUEST_DEVICE_METADATA_VOLTAGE_DATA
-#define env_sensors 4 // environmental sensors
+#define env_sensors 2 // environmental sensors
 
 float VSENSE = 3.3/4095; // constant to conversions of ADC value to V
-float V25 = 1.43; // Voltage of internal temperature sensor at 25°C
-float Avg_slope = 0.0043; // V/degC
+float V25 = 0.76; // Voltage of internal temperature sensor at 25°C
+float Avg_slope = 0.0025; // V/degC
 
 float pcb_temperature = 0.0; // initialized to return °C of PCB temperature
 float temperature = 0.0; // initialized to return °C of environment temperature
@@ -103,6 +109,7 @@ float pressure = 0.0; // initialized to return kPa of absolute pressure
 
 // OTHER VARIABLES
 uint8_t last_command_received = 0;
+uint8_t ERROR_CALL = 0;
 
 /* USER CODE END PV */
 
@@ -122,10 +129,6 @@ static void MX_I2C1_Init(void);
 // function to check address matching
 void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, uint16_t AddrMatchCode)
 {
-	#ifdef DEBUG
-	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13);
-	#endif
-
 	if ( TransferDirection == I2C_DIRECTION_TRANSMIT ) // Master sends a write instruction
 	{
 		// read byte sent by master (this is the request information command)
@@ -160,13 +163,7 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
 			case REQUEST_DEVICE_METADATA_COMPLETE:
 			{
 				// SEND DATA FOR EACH GAS SENSOR
-				for (int i = 0; i < gas_sensors; i++)
-				{
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, N[i].name, 47*gas_sensors, I2C_NEXT_FRAME);
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, N[i].type, 47*gas_sensors, I2C_NEXT_FRAME);
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, N[i].main_gas, 47*gas_sensors, I2C_NEXT_FRAME);
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&N[i].response_time, 47*gas_sensors, I2C_NEXT_FRAME); // treat int16 as a buffer, send LSB first
-				}
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, COMPLETE_DATA, sizeof(COMPLETE_DATA), I2C_NEXT_FRAME);
 				break;
 			}
 
@@ -179,10 +176,9 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
 				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&pressure, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
 
 				// SEND GAS SENSORS VOLTAGES
-				for (int i = 0; i < gas_sensors; i++)
-				{
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&N[i].voltage, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
-				}
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&n1_voltage, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&n2_voltage, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&n3_voltage, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
 				break;
 			}
 
@@ -191,6 +187,7 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
 				break;
 			}
 		}
+		last_command_received = 0; // to repeat detection
 	}
 }
 
@@ -200,7 +197,7 @@ void HAL_I2C_ListenCpltCallback(I2C_HandleTypeDef *hi2c)
 	HAL_I2C_EnableListen_IT(hi2c); // slave is ready again
 }
 
-#ifdef DEBUG
+#ifdef DEBUG_MODE
 // function to detect complete reception of information
 void HAL_I2C_SlaveRxCpltCallback(I2C_HandleTypeDef *hi2c)
 {
@@ -216,11 +213,17 @@ void HAL_I2C_SlaveTxCpltCallback(I2C_HandleTypeDef *hi2c)
 // function to manage i2c errors
 void HAL_I2C_ErrorCallback(I2C_HandleTypeDef *hi2c)
 {
-	HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15); // just for quick debug
-
+	if (HAL_I2C_GetError(hi2c) == HAL_I2C_ERROR_AF ) // Error obtained in debug, due to no clock stretching
+	{
+		ERROR_CALL = 1;
+	}
 	if (HAL_I2C_GetError(hi2c) == HAL_I2C_ERROR_OVR ) // Error obtained in debug, due to no clock stretching
 	{
-		HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_15);
+		ERROR_CALL = 2;
+	}
+	if (HAL_I2C_GetError(hi2c) == HAL_I2C_ERROR_TIMEOUT ) // Error obtained in debug, due to no clock stretching
+	{
+		ERROR_CALL = 3;
 	}
 }
 #endif
@@ -262,17 +265,112 @@ int main(void)
 
   HAL_I2C_EnableListen_IT(&hi2c1); // to activate the slave mode of I2C
 
-  #ifdef DEBUG
+  #ifdef DEBUG_MODE
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13, RESET);
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_14, RESET);
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_15, RESET);
+
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8, RESET);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_9, RESET);
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_10, RESET);
   #endif
 
   uint8_t total_adc_sensors = env_sensors + gas_sensors; // total ADC channels to be used for analog sensors
 
   uint32_t adc_values[total_adc_sensors]; // to store all read ADC values, in channel name order (channel1 -> adc[0], ..., temp -> adc[total-1])
 
+  //PA1 -> pressure
+  //PA2 -> FEC
+  //PA3 -> CO
+  //PF4 -> 4-NOC
+
   HAL_ADC_Start_DMA(&hadc1, adc_values, sizeof(adc_values)); // start the ADC in DMA mode
+
+  gas_sensor N1 = {"FECS40-1000", "Electroquimico", "Monoxido de carbono", 30};
+  gas_sensor N2 = {"CO-CE-10000", "Electroquimico", "Monoxido de carbono", 75};
+  gas_sensor N3 = {"4-NO2-20000", "Electroquimico", "Dioxido de nitrogeno", 60};
+  gas_sensor N4 = {"X-XXX-XXXXX", "XXXXXXXXXXXXX", "XXXXXXXXXXXXXXXXXXX", 0}; // dummy value
+
+  int i = 0;
+  for (int k = 0; k < 11; k++)
+  {
+	  COMPLETE_DATA1[i] = N1.name[k];
+	  i++;
+  }
+  for (int k = 0; k < 14; k++)
+  {
+	  COMPLETE_DATA1[i] = N1.type[k];
+	  i++;
+  }
+  for (int k = 0; k < 20; k++)
+  {
+	  COMPLETE_DATA1[i] = N1.main_gas[k];
+	  i++;
+  }
+
+  COMPLETE_DATA1[i] =  (N1.response_time >> 8) & 0xFF;
+  i++;
+  COMPLETE_DATA1[i] = (N1.response_time) & 0xFF;
+
+  i = 0;
+  for (int k = 0; k < 11; k++)
+  {
+	  COMPLETE_DATA2[i] = N2.name[k];
+	  i++;
+  }
+  for (int k = 0; k < 14; k++)
+  {
+	  COMPLETE_DATA2[i] = N2.type[k];
+	  i++;
+  }
+  for (int k = 0; k < 20; k++)
+  {
+	  COMPLETE_DATA2[i] = N2.main_gas[k];
+	  i++;
+  }
+
+
+  COMPLETE_DATA2[i] = (N2.response_time >> 8) & 0xFF;
+  i++;
+  COMPLETE_DATA2[i] = (N2.response_time) & 0xFF;
+
+  i = 0;
+  for (int k = 0; k < 11; k++)
+  {
+	  COMPLETE_DATA3[i] = N3.name[k];
+	  i++;
+  }
+  for (int k = 0; k < 14; k++)
+  {
+	  COMPLETE_DATA3[i] = N3.type[k];
+	  i++;
+  }
+  for (int k = 0; k < 20; k++)
+  {
+	  COMPLETE_DATA3[i] = N3.main_gas[k];
+	  i++;
+  }
+
+  COMPLETE_DATA3[i] =  (N3.response_time >> 8) & 0xFF;
+  i++;
+  COMPLETE_DATA3[i] =  (N3.response_time) & 0xFF;
+
+  int j = 0;
+  for (int i = 0; i < 47; i++)
+  {
+	  COMPLETE_DATA[j] = COMPLETE_DATA1[i];
+	  j++;
+  }
+  for (int i = 0; i < 47; i++)
+  {
+	  COMPLETE_DATA[j] = COMPLETE_DATA2[i];
+	  j++;
+  }
+  for (int i = 0; i < 47; i++)
+  {
+	  COMPLETE_DATA[j] = COMPLETE_DATA3[i];
+	  j++;
+  }
 
   /* USER CODE END 2 */
 
@@ -291,22 +389,21 @@ int main(void)
 	  #endif
 
 	  #ifdef PRES
-	  pressure = ((adc_values[2]/4095) - 0.05069)/0.00293; // formula derived from datasheet of KP229E2701 pag.12
+	  pressure = ((adc_values[0]/4095) - 0.05069)/0.00293; // formula derived from datasheet of KP229E2701 pag.12
 	  #endif
 
 	  #ifdef PCB_TEMP
-	  pcb_temperature = ((adc_values[total_adc_sensors-1]*VSENSE - V25)/ Avg_slope) + 25; // formula taken from reference manual of STM32F303VCT6 pag.373
+	  pcb_temperature = ((V25 - adc_values[total_adc_sensors-1]*VSENSE)/ Avg_slope) + 25; // formula taken from reference manual of STM32F303VCT6 pag.373
 	  #endif
 
 	  ////// COMPUTATION OF GAS SENSORS VOLTAGES //////
 
-	  for (int i = 0; i < gas_sensors; i++)
-	  {
-		  N[i].voltage = adc_values[i+3]*VSENSE*1000; // mV from n_i gas sensor
-	  }
+	  n1_voltage = adc_values[1]*VSENSE*1000; // mV from n_1 gas sensor
+	  n2_voltage = adc_values[2]*VSENSE*1000; // mV from n_2 gas sensor
+	  n3_voltage = adc_values[3]*VSENSE*1000; // mV from n_3 gas sensor
 
-	  #ifdef DEBUG
-	  HAL_GPIO_TogglePin(GPIOC, GPIO_PIN_13); // blink led to know that main program is running
+	  #ifdef DEBUG_MODE
+	  HAL_GPIO_TogglePin(GPIOE, GPIO_PIN_8); // blink led to know that main program is running
 	  #endif
 
 	  HAL_Delay(50); // dummy delay, can be changed to a strategy to compute ADC values with callback
@@ -392,7 +489,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
   hadc1.Init.DataAlign = ADC_DATAALIGN_RIGHT;
-  hadc1.Init.NbrOfConversion = 6;
+  hadc1.Init.NbrOfConversion = 5;
   hadc1.Init.DMAContinuousRequests = ENABLE;
   hadc1.Init.EOCSelection = ADC_EOC_SINGLE_CONV;
   hadc1.Init.LowPowerAutoWait = DISABLE;
@@ -410,7 +507,7 @@ static void MX_ADC1_Init(void)
   }
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_1;
+  sConfig.Channel = ADC_CHANNEL_2;
   sConfig.Rank = ADC_REGULAR_RANK_1;
   sConfig.SingleDiff = ADC_SINGLE_ENDED;
   sConfig.SamplingTime = ADC_SAMPLETIME_1CYCLE_5;
@@ -422,7 +519,7 @@ static void MX_ADC1_Init(void)
   }
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_2;
+  sConfig.Channel = ADC_CHANNEL_3;
   sConfig.Rank = ADC_REGULAR_RANK_2;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
@@ -430,7 +527,7 @@ static void MX_ADC1_Init(void)
   }
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_3;
+  sConfig.Channel = ADC_CHANNEL_4;
   sConfig.Rank = ADC_REGULAR_RANK_3;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
@@ -438,7 +535,7 @@ static void MX_ADC1_Init(void)
   }
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_4;
+  sConfig.Channel = ADC_CHANNEL_5;
   sConfig.Rank = ADC_REGULAR_RANK_4;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
@@ -446,17 +543,9 @@ static void MX_ADC1_Init(void)
   }
   /** Configure Regular Channel
   */
-  sConfig.Channel = ADC_CHANNEL_5;
-  sConfig.Rank = ADC_REGULAR_RANK_5;
-  if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
-  {
-    Error_Handler();
-  }
-  /** Configure Regular Channel
-  */
   sConfig.Channel = ADC_CHANNEL_TEMPSENSOR;
-  sConfig.Rank = ADC_REGULAR_RANK_6;
-  sConfig.SamplingTime = ADC_SAMPLETIME_181CYCLES_5;
+  sConfig.Rank = ADC_REGULAR_RANK_5;
+  sConfig.SamplingTime = ADC_SAMPLETIME_601CYCLES_5;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
   {
     Error_Handler();
@@ -484,7 +573,7 @@ static void MX_I2C1_Init(void)
   /* USER CODE END I2C1_Init 1 */
   hi2c1.Instance = I2C1;
   hi2c1.Init.Timing = 0x2000090E;
-  hi2c1.Init.OwnAddress1 = 160;
+  hi2c1.Init.OwnAddress1 = 26;
   hi2c1.Init.AddressingMode = I2C_ADDRESSINGMODE_7BIT;
   hi2c1.Init.DualAddressMode = I2C_DUALADDRESS_DISABLE;
   hi2c1.Init.OwnAddress2 = 0;
@@ -542,10 +631,14 @@ static void MX_GPIO_Init(void)
   __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOF_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOE_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
   HAL_GPIO_WritePin(GPIOC, GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15, GPIO_PIN_RESET);
+
+  /*Configure GPIO pin Output Level */
+  HAL_GPIO_WritePin(GPIOE, GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10, GPIO_PIN_RESET);
 
   /*Configure GPIO pins : PC13 PC14 PC15 */
   GPIO_InitStruct.Pin = GPIO_PIN_13|GPIO_PIN_14|GPIO_PIN_15;
@@ -553,6 +646,13 @@ static void MX_GPIO_Init(void)
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
   HAL_GPIO_Init(GPIOC, &GPIO_InitStruct);
+
+  /*Configure GPIO pins : PE8 PE9 PE10 */
+  GPIO_InitStruct.Pin = GPIO_PIN_8|GPIO_PIN_9|GPIO_PIN_10;
+  GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
+  GPIO_InitStruct.Pull = GPIO_NOPULL;
+  GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
+  HAL_GPIO_Init(GPIOE, &GPIO_InitStruct);
 
 }
 
