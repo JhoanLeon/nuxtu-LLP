@@ -68,7 +68,7 @@ uint8_t DEVICE_TYPE = 0x00;
 // REQUEST_DEVICE_METADATA_BASIC
 uint8_t BASIC_DATA[14] = {0x35, 0x45, 5, '2','0','/','0','1','/','2','0','2','2', 0x0F}; // BASIC_DATA[14] = {PCB_ID[15:8], PCB_ID[7:0], NUMBER_OF_SENSORS, MANUFACTURE_DATE, PCB_CAPABILITES};
 
-// Defines for real environmental sensors
+// Defines for actual environmental sensors in the system
 #define TEMP
 #define PCB_TEMP
 #define HUMD
@@ -79,9 +79,9 @@ uint8_t BASIC_DATA[14] = {0x35, 0x45, 5, '2','0','/','0','1','/','2','0','2','2'
 
 typedef struct gas_sensor
 {
-	char name[11];
-	char type[14];
-	char main_gas[20];
+	unsigned char name[11];
+	unsigned char type[14];
+	unsigned char main_gas[20];
 	int16_t response_time;
 	float voltage;
 } gas_sensor;
@@ -90,7 +90,7 @@ gas_sensor N[gas_sensors] = {{"TESTNAMEN0", "TESTSENSORTYPE", "TESTMAINGASOFSENS
 							{"TESTNAMEN1", "TESTSENSORTYPE", "TESTMAINGASOFSENSORN", 361, 0.0}};
 
 // REQUEST_DEVICE_METADATA_VOLTAGE_DATA
-#define env_sensors 4 // environment sensors
+#define env_sensors 4 // environmental sensors
 
 float VSENSE = 3.3/4095; // constant to conversions of ADC value to V
 float V25 = 1.43; // Voltage of internal temperature sensor at 25°C
@@ -101,15 +101,8 @@ float temperature = 0.0; // initialized to return °C of environment temperature
 float humidity = 0.0; // initialized to return %RH of environment humidity
 float pressure = 0.0; // initialized to return kPa of absolute pressure
 
-float *env_variables[env_sensors] = {&temperature, &pcb_temperature, &humidity, &pressure}; // array to send environmental variables
-// value of data on env_variable -> *env_variables[i]
-
 // OTHER VARIABLES
 uint8_t last_command_received = 0;
-
-uint8_t data;
-uint16_t data_response_time;
-float data_env;
 
 /* USER CODE END PV */
 
@@ -166,18 +159,13 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
 
 			case REQUEST_DEVICE_METADATA_COMPLETE:
 			{
-				// SEND DATA
+				// SEND DATA FOR EACH GAS SENSOR
 				for (int i = 0; i < gas_sensors; i++)
 				{
-					// send data of each gas sensor
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)N[i].name, sizeof(N[i].name), I2C_NEXT_FRAME);
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)N[i].type, sizeof(N[i].type), I2C_NEXT_FRAME);
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)N[i].main_gas, sizeof(N[i].main_gas), I2C_NEXT_FRAME);
-					data_response_time = N[i].response_time;
-					data = (data_response_time>>8)&(0xFF);
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &data, sizeof(data), I2C_NEXT_FRAME);
-					data = data_response_time & 0xFF;
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, &data, sizeof(data), I2C_NEXT_FRAME);
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, N[i].name, 47*gas_sensors, I2C_NEXT_FRAME);
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, N[i].type, 47*gas_sensors, I2C_NEXT_FRAME);
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, N[i].main_gas, 47*gas_sensors, I2C_NEXT_FRAME);
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&N[i].response_time, 47*gas_sensors, I2C_NEXT_FRAME); // treat int16 as a buffer, send LSB first
 				}
 				break;
 			}
@@ -185,16 +173,15 @@ void HAL_I2C_AddrCallback(I2C_HandleTypeDef *hi2c, uint8_t TransferDirection, ui
 			case REQUEST_DEVICE_METADATA_VOLTAGE_DATA:
 			{
 				// SEND ENVIRONMENTAL VARIABLES DATA
-				for (int i = 0; i < env_sensors; i++)
-				{
-					data_env = *env_variables[i];
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&data_env, sizeof(data_env), I2C_NEXT_FRAME); // try float values as a buffer to send through I2C
-				}
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&temperature, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&pcb_temperature, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&humidity, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
+				HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&pressure, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
 
 				// SEND GAS SENSORS VOLTAGES
 				for (int i = 0; i < gas_sensors; i++)
 				{
-					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&N[i].voltage, sizeof(N[i].voltage), I2C_NEXT_FRAME); // try float values as a buffer to send through I2C
+					HAL_I2C_Slave_Seq_Transmit_IT(hi2c, (uint8_t*)&N[i].voltage, 16+4*gas_sensors, I2C_NEXT_FRAME); // treat float values as a buffer to send through I2C
 				}
 				break;
 			}
@@ -294,6 +281,7 @@ int main(void)
   while (1)
   {
 	  ////// COMPUTATION OF ENVIRONMENTAL VALUES //////
+
 	  #ifdef TEMP
 	  temperature = -66.875 + 218.75*(adc_values[0]/4095); // formula taken from datasheet of SHT31-ARP-B pag.8 (°C -45 -> +125)
 	  #endif
@@ -502,7 +490,7 @@ static void MX_I2C1_Init(void)
   hi2c1.Init.OwnAddress2 = 0;
   hi2c1.Init.OwnAddress2Masks = I2C_OA2_NOMASK;
   hi2c1.Init.GeneralCallMode = I2C_GENERALCALL_DISABLE;
-  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_ENABLE;
+  hi2c1.Init.NoStretchMode = I2C_NOSTRETCH_DISABLE;
   if (HAL_I2C_Init(&hi2c1) != HAL_OK)
   {
     Error_Handler();
